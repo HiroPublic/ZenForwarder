@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "concurrently --kill-others \"npm:dev:server\" \"npm:dev:client\"",
+    "dev": "tsx src/server/dev/bootstrap-dev.ts",
     "dev:server": "tsx watch src/server/index.ts",
     "dev:client": "vite --host 0.0.0.0",
     "build": "tsc -p tsconfig.json && vite build",

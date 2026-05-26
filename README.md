@@ -60,7 +60,12 @@ npx playwright install chromium
 プロジェクト直下に `.env` を作成します。
 
 ```bash
-APP_URL=http://localhost:3000
+APP_URL=http://localhost:5173
+HEALTHCHECK_URL=
+AUTO_OPEN_BROWSER=true
+STARTUP_TIMEOUT_MS=30000
+STARTUP_POLL_INTERVAL_MS=250
+AUTO_OPEN_BROWSER_DELAY_MS=300
 SESSION_SECRET=change-me
 
 GOOGLE_CLIENT_ID=
@@ -95,6 +100,15 @@ API サーバーと Vite クライアントを同時に起動します。
 npm run dev
 ```
 
+`npm run dev` では、フロントエンド URL の起動完了を待ってから既定ブラウザを 1 回だけ自動で開きます。`APP_URL` を優先し、未設定時は `http://localhost:5173` を使います。`AUTO_OPEN_BROWSER=false` で無効化できます。CI やヘッドレス環境では自動起動しません。
+
+起動コマンド自体は従来どおりです。
+
+```bash
+cd ~/VScode/ZenForwarder
+npm run dev
+```
+
 アプリ画面:
 
 ```text
@@ -107,7 +121,7 @@ http://localhost:5173/
 http://localhost:3000/
 ```
 
-ブラウザから終了する場合は、サイドバーの `終了` ボタンを押します。`POST /api/shutdown` が呼ばれ、バックエンドプロセスが終了し、`concurrently` により Vite クライアントも停止します。ブラウザタブ自体はアプリから閉じません。
+ブラウザから終了する場合は、サイドバーの `終了` ボタンを押します。`POST /api/shutdown` が呼ばれ、バックエンドプロセスが終了し、親 bootstrap により Vite クライアントも停止します。ブラウザタブ自体はアプリから閉じません。
 
 ## HotelSlash ログイン設定
 

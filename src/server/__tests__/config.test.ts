@@ -21,7 +21,7 @@ describe("parseConfig", () => {
       EXCHANGE_RATE_API_KEY: ""
     });
 
-    expect(config.APP_URL).toBe("http://localhost:3000");
+    expect(config.APP_URL).toBe("http://localhost:5173");
     expect(config.SESSION_SECRET).toBe("dev-session-secret-change-me");
     expect(config.GMAIL_AUTH_ACCOUNT).toBe("user@example.com");
     expect(config.FORWARD_FROM_EMAIL).toBe("sender@example.com");

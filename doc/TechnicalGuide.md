@@ -6,11 +6,41 @@ ZenForwarderは、React/ViteのフロントエンドとExpressのバックエン
 
 - フロントエンド: `src/client/main.tsx`, `src/client/styles.css`
 - バックエンド: `src/server/index.ts`
+- 開発起動統括: `src/server/dev/bootstrap-dev.ts`
+- 開発用ブラウザ自動表示: `src/server/dev/`
 - ワークフロー制御: `src/server/workflow.ts`
 - 共通型: `src/shared/types.ts`
 - 外部連携サービス: `src/server/services/`
 
-開発時は`npm run dev`で、Viteクライアントを`http://localhost:5173/`、APIサーバーを`http://localhost:3000/`で起動します。
+開発時は`npm run dev`で、親プロセスのbootstrapがViteクライアントとAPIサーバーを起動します。Viteクライアントは`http://localhost:5173/`、APIサーバーは`http://localhost:3000/`です。フロントエンド URL が応答可能になったあと、既定ブラウザを1回だけ自動表示します。
+
+### 開発起動時のブラウザ自動表示
+
+`npm run dev`は`src/server/dev/bootstrap-dev.ts`を起点に動作します。
+
+- `bootstrap-dev.ts`
+  - `npm run dev:server`と`npm run dev:client`を子プロセスで起動
+  - 子プロセスの終了シグナルを監視し、片方が落ちたら全体を終了
+- `config.ts`
+  - `APP_URL`、`HEALTHCHECK_URL`、`AUTO_OPEN_BROWSER`、各種タイムアウト設定を解決
+  - `APP_URL`未設定時は`http://localhost:5173`へフォールバック
+  - CIやヘッドレス相当環境では自動表示をスキップ
+- `waitForUrl.ts`
+  - `HEALTHCHECK_URL`または`APP_URL`へHTTPポーリング
+  - 200台と300台を起動成功扱い
+- `openBrowser.ts`
+  - macOSは`open`、Windowsは`cmd /c start`、Linuxは`xdg-open`で既定ブラウザを起動
+- `autoOpenBrowser.ts`
+  - 起動待機、追加遅延、ブラウザ起動、ログ出力、多重起動防止を担当
+
+開発用の主な環境変数:
+
+- `APP_URL`
+- `HEALTHCHECK_URL`
+- `AUTO_OPEN_BROWSER`
+- `STARTUP_TIMEOUT_MS`
+- `STARTUP_POLL_INTERVAL_MS`
+- `AUTO_OPEN_BROWSER_DELAY_MS`
 
 ## 2. 主要サービス
 
@@ -179,7 +209,7 @@ HotelSlash価格ページはクライアント描画のため、本文を最大7
 - `GET /api/gmail/archive-recorded-reservations`
 - `POST /api/gmail/archive-recorded-reservations`
 
-`POST /api/shutdown`はバックエンドの親プロセスへ`SIGTERM`を送り、自身も終了します。`npm run dev`では`concurrently --kill-others`が他方のプロセスを停止します。
+`POST /api/shutdown`はバックエンドの親プロセスへ`SIGTERM`を送り、自身も終了します。`npm run dev`では親bootstrapがこの終了を受けてViteクライアントも停止します。
 
 ## 6. データ型
 
@@ -215,6 +245,10 @@ Low Price Proposalでは、`PendingForward.kind`を`lowPriceProposal`にし、`p
 - 為替換算
 - HotelSlash価格ページテキスト抽出
 - アプリ設定のデフォルト値と空文字の扱い
+- 開発用URL解決
+- 自動ブラウザ起動のスキップ条件
+- 起動待機の成功とタイムアウト
+- 開発セッション内の多重起動防止
 
 実行:
 

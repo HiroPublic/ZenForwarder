@@ -2,7 +2,7 @@ import "dotenv/config";
 import { z } from "zod";
 
 export const EnvSchema = z.object({
-  APP_URL: envDefault("http://localhost:3000"),
+  APP_URL: envDefault("http://localhost:5173"),
   SESSION_SECRET: envDefault("dev-session-secret-change-me"),
   GOOGLE_CLIENT_ID: envOptional(),
   GOOGLE_CLIENT_SECRET: envOptional(),
