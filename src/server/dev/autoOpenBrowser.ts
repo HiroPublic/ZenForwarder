@@ -21,6 +21,7 @@ export function createAutoOpenBrowserRunner(
   return async function autoOpenBrowser(config: DevBrowserConfig) {
     log(`[dev:auto-open] resolved appUrl=${config.appUrl ?? "unavailable"}`);
     log(`[dev:auto-open] resolved healthcheckUrl=${config.healthcheckUrl ?? "unavailable"}`);
+    log(`[dev:auto-open] resolved apiHealthcheckUrl=${config.apiHealthcheckUrl ?? "unavailable"}`);
 
     if (config.skipReason) {
       log(`[dev:auto-open] skipped: ${config.skipReason}`);
@@ -32,7 +33,7 @@ export function createAutoOpenBrowserRunner(
       return { opened: false, reason: "already-opened" };
     }
 
-    if (!config.appUrl || !config.healthcheckUrl) {
+    if (!config.appUrl || !config.healthcheckUrl || !config.apiHealthcheckUrl) {
       log("[dev:auto-open] skipped: URL not available");
       return { opened: false, reason: "url-unavailable" };
     }
@@ -40,13 +41,21 @@ export function createAutoOpenBrowserRunner(
     log("[dev:auto-open] waiting for frontend startup");
 
     try {
-      const result = await waitForUrlFn({
+      const frontendResult = await waitForUrlFn({
         url: config.healthcheckUrl,
         timeoutMs: config.startupTimeoutMs,
         pollIntervalMs: config.startupPollIntervalMs
       });
       log(
-        `[dev:auto-open] startup wait succeeded: status=${result.status} elapsedMs=${result.elapsedMs} attempts=${result.attempts}`
+        `[dev:auto-open] frontend wait succeeded: status=${frontendResult.status} elapsedMs=${frontendResult.elapsedMs} attempts=${frontendResult.attempts}`
+      );
+      const apiResult = await waitForUrlFn({
+        url: config.apiHealthcheckUrl,
+        timeoutMs: config.startupTimeoutMs,
+        pollIntervalMs: config.startupPollIntervalMs
+      });
+      log(
+        `[dev:auto-open] api wait succeeded: status=${apiResult.status} elapsedMs=${apiResult.elapsedMs} attempts=${apiResult.attempts}`
       );
     } catch (error) {
       warn(

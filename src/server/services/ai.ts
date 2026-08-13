@@ -138,68 +138,74 @@ async function extractReservationJsonWithAi(email: SourceEmail): Promise<Reserva
 }
 
 export async function generateForwardEmail(metadata: ReservationMetadata): Promise<{ subject: string; body: string }> {
-  const subject = `Hotel Reservation - ${metadata.hotelName} - ${metadata.checkIn ?? "TBD"} to ${metadata.checkOut ?? "TBD"}`;
-  const body = redactPersonalInformation(`Hotel Reservation
+  const translatedFields = await translateForwardFieldsToEnglish(metadata);
+  const formattedCheckIn = formatForwardDate(metadata.checkIn);
+  const formattedCheckOut = formatForwardDate(metadata.checkOut);
+  const parserFriendlyCheckIn = formatForwardDate(metadata.checkIn, { verbose: true });
+  const parserFriendlyCheckOut = formatForwardDate(metadata.checkOut, { verbose: true });
+  const subject = `Hotel reservation confirmation: ${metadata.hotelName}, check in ${parserFriendlyCheckIn}, check out ${parserFriendlyCheckOut}`;
+  const body = redactPersonalInformation(`Hotel reservation confirmation
 
-Hotel Name:
+Hotel:
 ${metadata.hotelName}
 
-Hotel Address:
-${metadata.hotelAddress ?? "Not provided"}
+Check in date:
+${parserFriendlyCheckIn}
 
-Hotel Phone:
-${metadata.hotelPhone ?? "Not provided"}
+Check out date:
+${parserFriendlyCheckOut}
 
-Booking Site / Reservation Number:
-${formatBookingReference(metadata)}
+Confirmation number:
+${cleanForwardFieldText(metadata.reservationNumber) ?? "Not provided"}
 
-Reservation Number:
-${metadata.reservationNumber ?? "Not provided"}
+Guest name:
+${cleanForwardFieldText(metadata.guestName) ?? "Not provided"}
 
-Guest Name:
-${metadata.guestName ?? "Not provided"}
-
-Number of Guests:
+Guests:
 ${formatGuestCounts(metadata)}
+
+Room type:
+${translatedFields.room}
+
+Total price:
+${metadata.originalAmount ? `${metadata.originalCurrency ?? ""} ${metadata.originalAmount}`.trim() : "Not provided"}
+
+Hotel address:
+${translatedFields.hotelAddress}
+
+Hotel phone:
+${cleanForwardFieldText(metadata.hotelPhone) ?? "Not provided"}
+
+Booking site:
+${cleanForwardFieldText(metadata.bookingSite) ?? "Not provided"}
+
+Number of nights:
+${metadata.nights ?? "Not provided"}
+
+Meal plan:
+${translatedFields.mealPlan}
+
+Cancellation policy:
+${translatedFields.cancellationPolicy}
 
 Status:
 ${metadata.status}
 
-Check-in:
-${metadata.checkIn ?? "Not provided"}
+Original email type:
+${metadata.emailType}
 
-Check-out:
-${metadata.checkOut ?? "Not provided"}
-
-Number of Nights:
-${metadata.nights ?? "Not provided"}
-
-Room:
-${metadata.room ?? "Not provided"}
-
-Meal Plan:
-${metadata.mealPlan ?? "Not provided"}
-
-Guests:
-${metadata.guestName ?? "Not provided"}
-
-Total Price:
-${metadata.originalAmount ? `${metadata.originalCurrency ?? ""} ${metadata.originalAmount}`.trim() : "Not provided"}
-
-Cancellation Policy:
-${metadata.cancellationPolicy ?? "Not provided"}
-
-Notes:
-${metadata.notes ?? "None"}
-
-Original Email Type:
-${metadata.emailType}`);
+Forwarding reference:
+Hotel Name: ${metadata.hotelName}
+Booking Site / Reservation Number: ${formatBookingReference(metadata)}
+Check-in: ${formattedCheckIn}
+Check-out: ${formattedCheckOut}
+Notes: ${translatedFields.notes}`);
 
   return { subject, body };
 }
 
 function formatBookingReference(metadata: ReservationMetadata) {
-  return `${metadata.bookingSite ?? "Not provided"} / ${metadata.reservationNumber ?? "Not provided"}`;
+  return `${cleanForwardFieldText(metadata.bookingSite) ?? "Not provided"} / ${cleanForwardFieldText(metadata.reservationNumber) ?? "Not provided"}`;
 }
 
 function formatGuestCounts(metadata: ReservationMetadata) {
@@ -207,6 +213,116 @@ function formatGuestCounts(metadata: ReservationMetadata) {
   if (typeof metadata.adultCount === "number") parts.push(`${metadata.adultCount} ${metadata.adultCount === 1 ? "adult" : "adults"}`);
   if (typeof metadata.childCount === "number") parts.push(`${metadata.childCount} ${metadata.childCount === 1 ? "child" : "children"}`);
   return parts.length ? parts.join(", ") : "Not provided";
+}
+
+function formatForwardDate(value?: string, options?: { verbose?: boolean }) {
+  if (!value) return "Not provided";
+  const normalized = value.trim();
+  const isoDateMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!isoDateMatch) return normalized;
+
+  const parsed = new Date(`${isoDateMatch[1]}-${isoDateMatch[2]}-${isoDateMatch[3]}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return normalized;
+
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: options?.verbose ? "long" : undefined,
+    month: options?.verbose ? "long" : "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC"
+  }).format(parsed);
+}
+
+function cleanForwardFieldText(value?: string) {
+  if (!value) return undefined;
+
+  const cleaned = decodeHtmlEntities(
+    value
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/p>|<\/div>|<\/tr>|<\/li>/gi, "\n")
+      .replace(/<li>/gi, "- ")
+      .replace(/<[^>]+>/g, " ")
+  )
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+
+  return cleaned || undefined;
+}
+
+function decodeHtmlEntities(value: string) {
+  return value
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+function containsNonAscii(value?: string) {
+  return Boolean(value && /[^\x00-\x7F]/.test(value));
+}
+
+async function translateForwardFieldsToEnglish(metadata: ReservationMetadata) {
+  const cleaned = {
+    hotelAddress: cleanForwardFieldText(metadata.hotelAddress) ?? "Not provided",
+    room: cleanForwardFieldText(metadata.room) ?? "Not provided",
+    mealPlan: cleanForwardFieldText(metadata.mealPlan) ?? "Not provided",
+    cancellationPolicy: cleanForwardFieldText(metadata.cancellationPolicy) ?? "Not provided",
+    notes: cleanForwardFieldText(metadata.notes) ?? "None"
+  };
+
+  const needsTranslation = Object.values(cleaned).some(containsNonAscii);
+  if (!client || !needsTranslation) return cleaned;
+
+  try {
+    const response = await client.responses.create({
+      model: config.OPENAI_MODEL,
+      input: [
+        {
+          role: "system",
+          content:
+            "Translate the provided hotel reservation fields into concise, parser-friendly English. Preserve all numbers, dates, times, currencies, and booking terms exactly. Remove HTML fragments. Return strict JSON with the same keys only."
+        },
+        {
+          role: "user",
+          content: JSON.stringify(cleaned)
+        }
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "forward_email_fields",
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["hotelAddress", "room", "mealPlan", "cancellationPolicy", "notes"],
+            properties: {
+              hotelAddress: { type: "string" },
+              room: { type: "string" },
+              mealPlan: { type: "string" },
+              cancellationPolicy: { type: "string" },
+              notes: { type: "string" }
+            }
+          }
+        }
+      }
+    });
+
+    const translated = JSON.parse(response.output_text) as Record<string, string>;
+    return {
+      hotelAddress: cleanForwardFieldText(translated.hotelAddress) ?? cleaned.hotelAddress,
+      room: cleanForwardFieldText(translated.room) ?? cleaned.room,
+      mealPlan: cleanForwardFieldText(translated.mealPlan) ?? cleaned.mealPlan,
+      cancellationPolicy: cleanForwardFieldText(translated.cancellationPolicy) ?? cleaned.cancellationPolicy,
+      notes: cleanForwardFieldText(translated.notes) ?? cleaned.notes
+    };
+  } catch {
+    return cleaned;
+  }
 }
 
 function mockExtract(email: SourceEmail): ReservationMetadata {
@@ -321,7 +437,11 @@ function countTransportSignals(text: string) {
     /\bvehicle type\b/i,
     /\bdriver(s)?\b/i,
     /\btrain station\b/i,
-    /\bairport\b/i,
+    /\bairport transfer\b/i,
+    /\bairport shuttle\b/i,
+    /\bairport pickup\b/i,
+    /\bairport pick-up\b/i,
+    /\bairport drop[\s-]?off\b/i,
     /\bfare\b/i,
     /\barrivals?\b/i,
     /\bdeparture\b/i,
@@ -490,6 +610,11 @@ function countHotelStayTextSignals(text: string) {
     /\brate plan\b/i,
     /\bhotel reservation\b/i,
     /\bhotel booking\b/i,
+    /\breservation confirmed\b/i,
+    /\bbooking confirmed\b/i,
+    /ご宿泊予約/i,
+    /予約が確定しました/i,
+    /宿泊予約確認/i,
     /\bcancellation policy\b/i,
     /\bproperty address\b/i
   ]);

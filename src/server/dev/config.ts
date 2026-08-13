@@ -6,6 +6,7 @@ export const DEFAULT_AUTO_OPEN_BROWSER_DELAY_MS = 300;
 export interface DevBrowserConfig {
   appUrl: string | null;
   healthcheckUrl: string | null;
+  apiHealthcheckUrl: string | null;
   autoOpenBrowser: boolean;
   startupTimeoutMs: number;
   startupPollIntervalMs: number;
@@ -27,11 +28,13 @@ export function resolveDevBrowserConfig(
 
   const appUrl = normalizeUrl(env.APP_URL, defaultAppUrl);
   const healthcheckUrl = normalizeUrl(env.HEALTHCHECK_URL, appUrl);
+  const apiHealthcheckUrl = normalizeUrl(env.API_HEALTHCHECK_URL, "http://localhost:3000/api/health");
 
   const skipReason = resolveSkipReason({
     env,
     appUrl,
     healthcheckUrl,
+    apiHealthcheckUrl,
     platform,
     isTTY
   });
@@ -39,6 +42,7 @@ export function resolveDevBrowserConfig(
   return {
     appUrl,
     healthcheckUrl,
+    apiHealthcheckUrl,
     autoOpenBrowser: parseBoolean(env.AUTO_OPEN_BROWSER, true),
     startupTimeoutMs: parsePositiveInteger(env.STARTUP_TIMEOUT_MS, DEFAULT_STARTUP_TIMEOUT_MS),
     startupPollIntervalMs: parsePositiveInteger(env.STARTUP_POLL_INTERVAL_MS, DEFAULT_STARTUP_POLL_INTERVAL_MS),
@@ -54,12 +58,14 @@ function resolveSkipReason({
   env,
   appUrl,
   healthcheckUrl,
+  apiHealthcheckUrl,
   platform,
   isTTY
 }: {
   env: NodeJS.ProcessEnv;
   appUrl: string | null;
   healthcheckUrl: string | null;
+  apiHealthcheckUrl: string | null;
   platform: NodeJS.Platform;
   isTTY: boolean;
 }) {
@@ -77,6 +83,10 @@ function resolveSkipReason({
 
   if (!healthcheckUrl) {
     return "HEALTHCHECK_URL is invalid";
+  }
+
+  if (!apiHealthcheckUrl) {
+    return "API_HEALTHCHECK_URL is invalid";
   }
 
   if (parseBoolean(env.HEADLESS, false)) {

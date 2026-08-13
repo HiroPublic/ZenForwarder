@@ -7,6 +7,12 @@ import type { CurrentReservationInfo } from "../../shared/types";
 const HOTELSLASH_LOGIN_URL = "https://www.hotelslash.com/Account/LogIn";
 const HOTELSLASH_TRIPS_URL = "https://www.hotelslash.com/Trips";
 const HOTELSLASH_ORIGIN = "https://www.hotelslash.com";
+const HOTELSLASH_GOTO_TIMEOUT_MS = 30_000;
+const HOTELSLASH_NETWORK_SETTLE_TIMEOUT_MS = 5_000;
+const HOTELSLASH_PARSE_DEADLINE_MS = 20_000;
+const HOTELSLASH_POLL_INTERVAL_MS = 1_000;
+const HOTELSLASH_BODY_TIMEOUT_MS = 3_000;
+const HOTELSLASH_STABLE_MARKETING_PAGE_ATTEMPTS = 3;
 type HotelSlashStorageState = Awaited<ReturnType<BrowserContext["storageState"]>>;
 
 interface SavedHotelSlashAuthState {
@@ -78,8 +84,8 @@ export async function extractTopHotelSlashOffer(pageUrl: string): Promise<HotelS
   try {
     await applySavedSessionStorage(context, authState.sessionStorage);
     const page = await context.newPage();
-    await page.goto(pageUrl, { waitUntil: "domcontentloaded", timeout: 45_000 });
-    await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => undefined);
+    await page.goto(pageUrl, { waitUntil: "domcontentloaded", timeout: HOTELSLASH_GOTO_TIMEOUT_MS });
+    await page.waitForLoadState("networkidle", { timeout: HOTELSLASH_NETWORK_SETTLE_TIMEOUT_MS }).catch(() => undefined);
     return await parseRenderedOffer(page, pageUrl);
   } finally {
     await context.close();
@@ -143,6 +149,28 @@ export function parseTopHotelSlashOffer(text: string, pageUrl = ""): HotelSlashO
     conditions: findConditions(topOfferLines),
     currentReservation
   };
+}
+
+export function shouldAbortHotelSlashPolling(text: string) {
+  const normalized = text.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!normalized) return false;
+  const hasOfferSignals =
+    normalized.includes("your hotelslash rates") ||
+    normalized.includes("rebook your") ||
+    normalized.includes("here are the details of your current reservation") ||
+    normalized.includes("rates we found are no longer available") ||
+    normalized.includes("sign in to your account");
+  if (hasOfferSignals) return false;
+
+  return (
+    normalized.includes("about gift cards") ||
+    normalized.includes("save big on hotels") ||
+    normalized.includes("where would you like to stay") ||
+    normalized.includes("step 1 choose where you'd like to stay") ||
+    normalized.includes("step 2 our algorithm finds you the best deal possible") ||
+    normalized.includes("blog your trips hello") ||
+    normalized.includes("members unlock exclusive")
+  );
 }
 
 function normalizeRenderedLines(text: string) {
@@ -301,10 +329,16 @@ function titleCaseCondition(value: string) {
 async function parseRenderedOffer(page: Page, originalUrl: string) {
   let lastText = "";
   let lastError: unknown;
-  const deadline = Date.now() + 75_000;
+  let stableMarketingPageAttempts = 0;
+  let previousSignature = "";
+  const deadline = Date.now() + HOTELSLASH_PARSE_DEADLINE_MS;
 
   while (Date.now() < deadline) {
-    lastText = await page.locator("body").innerText({ timeout: 10_000 }).catch(() => "");
+    lastText = await page.locator("body").innerText({ timeout: HOTELSLASH_BODY_TIMEOUT_MS }).catch(() => "");
+    const signature = lastText.replace(/\s+/g, " ").trim();
+    stableMarketingPageAttempts =
+      signature && signature === previousSignature && shouldAbortHotelSlashPolling(lastText) ? stableMarketingPageAttempts + 1 : shouldAbortHotelSlashPolling(lastText) ? 1 : 0;
+    previousSignature = signature;
     if (isHotelSlashLoginPage(page.url(), lastText)) {
       throw new Error(
         [
@@ -329,21 +363,19 @@ async function parseRenderedOffer(page: Page, originalUrl: string) {
         lastError = error;
       }
     }
-    await page.waitForTimeout(2_000);
+    if (stableMarketingPageAttempts >= HOTELSLASH_STABLE_MARKETING_PAGE_ATTEMPTS) {
+      throw buildHotelSlashParseFailure(originalUrl, page.url(), await page.title().catch(() => "(title unavailable)"), lastText, lastError);
+    }
+    if (Date.now() + HOTELSLASH_POLL_INTERVAL_MS >= deadline) break;
+    await page.waitForTimeout(HOTELSLASH_POLL_INTERVAL_MS);
   }
 
-  const title = await page.title().catch(() => "(title unavailable)");
-  const excerpt = lastText.replace(/\s+/g, " ").trim().slice(0, 500);
-  const detail = lastError instanceof Error ? lastError.message : "No parse attempt succeeded.";
-  throw new Error(
-    [
-      "HotelSlash rates page loaded, but the top offer could not be extracted.",
-      `Requested URL: ${originalUrl}`,
-      `Final URL: ${page.url()}`,
-      `Title: ${title}`,
-      `Parse detail: ${detail}`,
-      excerpt ? `Visible text excerpt: ${excerpt}` : "Visible text excerpt: (empty)"
-    ].join(" ")
+  throw buildHotelSlashParseFailure(
+    originalUrl,
+    page.url(),
+    await page.title().catch(() => "(title unavailable)"),
+    lastText,
+    lastError
   );
 }
 
@@ -433,4 +465,19 @@ function readSavedHotelSlashAuthState(): SavedHotelSlashAuthState | undefined {
 
 function writeSavedHotelSlashAuthState(state: SavedHotelSlashAuthState) {
   fs.writeFileSync(getHotelSlashAuthStatePath(), JSON.stringify(state, null, 2));
+}
+
+function buildHotelSlashParseFailure(originalUrl: string, finalUrl: string, title: string, lastText: string, lastError: unknown) {
+  const excerpt = lastText.replace(/\s+/g, " ").trim().slice(0, 500);
+  const detail = lastError instanceof Error ? lastError.message : "No parse attempt succeeded.";
+  return new Error(
+    [
+      "HotelSlash rates page loaded, but the top offer could not be extracted.",
+      `Requested URL: ${originalUrl}`,
+      `Final URL: ${finalUrl}`,
+      `Title: ${title}`,
+      `Parse detail: ${detail}`,
+      excerpt ? `Visible text excerpt: ${excerpt}` : "Visible text excerpt: (empty)"
+    ].join(" ")
+  );
 }

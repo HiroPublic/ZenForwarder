@@ -2,7 +2,7 @@ import { StrictMode, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, KeyRound, Loader2, MailSearch, Power, RefreshCw, Send, ShieldCheck, ThumbsDown, ThumbsUp, XCircle } from "lucide-react";
-import type { PendingForward } from "../shared/types";
+import type { PendingForward, SyncError, SyncProgress } from "../shared/types";
 import "./styles.css";
 
 type ApiState = "idle" | "loading" | "error";
@@ -30,6 +30,12 @@ interface HotelSlashStatus {
   loginWindowOpen: boolean;
 }
 
+interface SyncResponse {
+  items?: PendingForward[];
+  errors?: SyncError[];
+  error?: string;
+}
+
 function App() {
   const [items, setItems] = useState<PendingForward[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
@@ -39,8 +45,12 @@ function App() {
   const [shutdownState, setShutdownState] = useState<ShutdownState>("idle");
   const [authStatus, setAuthStatus] = useState<AuthStatus>();
   const [hotelSlashStatus, setHotelSlashStatus] = useState<HotelSlashStatus>();
+  const [syncProgress, setSyncProgress] = useState<SyncProgress>();
+  const [shouldPollSyncProgress, setShouldPollSyncProgress] = useState(false);
   const [message, setMessage] = useState("未処理メールを同期してください。");
+  const [reloadReservationNumber, setReloadReservationNumber] = useState("");
   const selected = useMemo(() => items.find((item) => item.id === selectedId) ?? items[0], [items, selectedId]);
+  const syncOverlayVisible = pendingAction === "sync" || shouldPollSyncProgress || Boolean(syncProgress?.active);
 
   useEffect(() => {
     void loadAuthStatus();
@@ -54,6 +64,31 @@ function App() {
       setEditedBody(selected.generatedBody);
     }
   }, [selected?.id]);
+
+  useEffect(() => {
+    if (!syncOverlayVisible) return;
+    let cancelled = false;
+
+    async function pollOnce() {
+      try {
+        const response = await fetch("/api/sync/progress");
+        const data = (await response.json()) as SyncProgress;
+        if (!cancelled) setSyncProgress(data);
+      } catch {
+        // Keep polling while sync is active.
+      }
+    }
+
+    void pollOnce();
+    const intervalId = window.setInterval(() => {
+      void pollOnce();
+    }, 400);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [syncOverlayVisible]);
 
   async function loadPending() {
     const response = await fetch("/api/pending");
@@ -114,26 +149,68 @@ function App() {
     }
   }
 
-  async function sync() {
+  async function sync(forceReload = false, reservationNumber?: string) {
     if (authStatus?.gmailConfigured && !authStatus.gmailAuthenticated) {
       setApiState("error");
       setMessage("Gmail連携が未完了です。先にGmail連携を実行してください。");
       return;
     }
+    const normalizedReservationNumber = reservationNumber?.trim();
+    if (forceReload && !normalizedReservationNumber) {
+      setApiState("error");
+      setMessage("確認用の再取込には予約番号を入力してください。");
+      return;
+    }
     setPendingAction("sync");
     setApiState("loading");
-    setMessage("Gmail からホテル予約メールを確認しています。");
+    setShouldPollSyncProgress(true);
+    setSyncProgress({
+      active: true,
+      stage: "同期を開始しています",
+      currentStepLabel: "同期を開始しています",
+      currentStepIndex: 0,
+      currentStepTotal: 0,
+      totalCandidates: 0,
+      completedCandidates: 0,
+      failedCandidates: 0,
+      currentIndex: 0,
+      lastUpdatedAt: new Date().toISOString()
+    });
+    setMessage(
+      forceReload && normalizedReservationNumber
+        ? `予約番号 ${normalizedReservationNumber} を指定して Gmail を確認しています。`
+        : "Gmail からホテル予約メールを確認しています。"
+    );
     try {
-      const response = await fetch("/api/sync", { method: "POST" });
-      const data = (await response.json()) as { items?: PendingForward[]; error?: string };
+      const response = await fetch("/api/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ forceReload, reservationNumber: normalizedReservationNumber })
+      });
+      const data = (await response.json()) as SyncResponse;
       if (!response.ok) throw new Error(data.error ?? "同期に失敗しました。");
       setItems(data.items ?? []);
-      setMessage(data.items?.length ? "承認待ちメールを生成しました。" : "新しい承認待ちメールはありません。");
-      setApiState("idle");
+      if ((data.errors?.length ?? 0) > 0) {
+        setMessage(formatSyncWarning(data.errors ?? [], data.items ?? []));
+        setApiState("error");
+      } else {
+        setMessage(
+          data.items?.length
+            ? forceReload
+              ? `予約番号 ${normalizedReservationNumber} の承認待ちメールを生成しました。`
+              : "承認待ちメールを生成しました。"
+            : forceReload
+              ? `予約番号 ${normalizedReservationNumber} に一致する承認待ちメールはありませんでした。`
+              : "新しい承認待ちメールはありません。"
+        );
+        setApiState("idle");
+      }
     } catch (error) {
       setApiState("error");
       setMessage(error instanceof Error ? error.message : "同期に失敗しました。");
     } finally {
+      setShouldPollSyncProgress(false);
+      setSyncProgress((current) => (current ? { ...current, active: false } : current));
       setPendingAction("none");
     }
   }
@@ -274,8 +351,9 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
-      <section className="sidebar">
+    <>
+      <main className="app-shell">
+        <section className="sidebar">
         <div className="brand">
           <ShieldCheck size={28} />
           <div>
@@ -291,10 +369,23 @@ function App() {
           </a>
         ) : null}
 
-        <button className="primary-action" onClick={sync} disabled={apiState === "loading"}>
+        <button className="primary-action" onClick={() => void sync(false)} disabled={apiState === "loading"}>
           {pendingAction === "sync" ? <Loader2 className="spin" size={18} /> : <MailSearch size={18} />}
           Gmail同期
         </button>
+        <div className="targeted-reload">
+          <input
+            type="text"
+            value={reloadReservationNumber}
+            onChange={(event) => setReloadReservationNumber(event.target.value)}
+            placeholder="予約番号を入力"
+            disabled={apiState === "loading"}
+          />
+          <button className="secondary-action" onClick={() => void sync(true, reloadReservationNumber)} disabled={apiState === "loading"}>
+            {pendingAction === "sync" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+            予約番号を指定して再取込
+          </button>
+        </div>
 
         <div className="hotelslash-actions">
           <button className="auth-action" onClick={startHotelSlashLogin} disabled={apiState === "loading" || hotelSlashStatus?.loginWindowOpen}>
@@ -343,13 +434,13 @@ function App() {
             ))}
           </AnimatePresence>
         </div>
-      </section>
+        </section>
 
-      <section className="workspace">
-        {selected ? (
-          <>
+        <section className="workspace">
+          {selected ? (
+            <>
             <header className="review-header">
-              <div>
+              <div className="review-heading">
                 <p className="eyebrow">{selected.metadata.status}</p>
                 <h2>{selected.generatedSubject}</h2>
                 <p className="source">
@@ -487,16 +578,63 @@ function App() {
                 </span>
               ))}
             </section>
-          </>
-        ) : (
-          <section className="empty-state">
-            <MailSearch size={42} />
-            <h2>承認待ちメールはありません</h2>
-            <p>Gmail同期を実行すると、過去1週間のホテル予約メールを確認します。</p>
-          </section>
-        )}
-      </section>
-    </main>
+            </>
+          ) : (
+            <section className="empty-state">
+              <MailSearch size={42} />
+              <h2>承認待ちメールはありません</h2>
+              <p>Gmail同期を実行すると、過去1週間のホテル予約メールを確認します。</p>
+            </section>
+          )}
+        </section>
+      </main>
+      <AnimatePresence>
+        {syncOverlayVisible && syncProgress ? (
+          <motion.div className="sync-progress-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <motion.section
+              className="sync-progress-modal"
+              initial={{ opacity: 0, y: 16, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.98 }}
+            >
+              <div className="sync-progress-header">
+                <div>
+                  <p className="sync-progress-eyebrow">Gmail同期</p>
+                  <h3>{syncProgress.stage}</h3>
+                </div>
+                <Loader2 className="spin" size={22} />
+              </div>
+              <div className="sync-progress-bar">
+                <span style={{ width: `${syncProgressPercent(syncProgress)}%` }} />
+              </div>
+              <div className="sync-progress-meta">
+                <strong>
+                  {syncProgress.totalCandidates > 0
+                    ? `${Math.min(syncProgress.completedCandidates + (syncProgress.active && syncProgress.currentEmailId ? 1 : 0), syncProgress.totalCandidates)} / ${syncProgress.totalCandidates}`
+                    : "候補メールを確認中"}
+                </strong>
+                <span>
+                  完了 {syncProgress.completedCandidates}
+                  {syncProgress.failedCandidates ? ` / エラー ${syncProgress.failedCandidates}` : ""}
+                </span>
+              </div>
+              {syncProgress.currentStepTotal > 0 ? (
+                <div className="sync-progress-step">
+                  <span>{syncProgress.currentStepLabel ?? syncProgress.stage}</span>
+                  <strong>
+                    {Math.min(syncProgress.currentStepIndex, syncProgress.currentStepTotal)} / {syncProgress.currentStepTotal}
+                  </strong>
+                </div>
+              ) : null}
+              <div className="sync-progress-current">
+                <p>{syncProgress.currentEmailSubject ?? "メール一覧を取得しています"}</p>
+                {syncProgress.currentEmailFrom ? <small>{syncProgress.currentEmailFrom}</small> : null}
+              </div>
+            </motion.section>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </>
   );
 }
 
@@ -558,6 +696,26 @@ function CompactFact({ label, value }: { label: string; value?: string }) {
       <strong>{value}</strong>
     </div>
   );
+}
+
+function formatSyncWarning(errors: SyncError[], items: PendingForward[]) {
+  const summary = items.length ? "一部のメールは処理できませんでしたが、処理できたメールは一覧に表示しています。" : "処理できるメールはありませんでした。";
+  return [
+    summary,
+    ...errors.map((error, index) =>
+      `${index + 1}. 件名: ${error.subject} / 受信日時: ${new Date(error.receivedAt).toLocaleString("ja-JP")} / 送信者: ${error.from}\n${error.message}`
+    )
+  ].join("\n");
+}
+
+function syncProgressPercent(progress: SyncProgress) {
+  if (progress.totalCandidates <= 0) return 12;
+  const completedBase = progress.completedCandidates / progress.totalCandidates;
+  const stepFraction =
+    progress.active && progress.currentEmailId && progress.currentStepTotal > 0
+      ? ((Math.max(progress.currentStepIndex, 1) - 1) / progress.currentStepTotal) * (1 / progress.totalCandidates)
+      : 0;
+  return Math.min(100, (completedBase + stepFraction) * 100);
 }
 
 function ArrangementFact({ checked }: { checked: boolean }) {

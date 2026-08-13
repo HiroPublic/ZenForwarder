@@ -9,7 +9,7 @@ function buildMetadata(overrides: Partial<ReservationMetadata> = {}): Reservatio
     hotelPhone: "+81-3-0000-0000",
     bookingSite: "Expedia",
     reservationNumber: "ABC123",
-    guestName: "Hiro Kishimoto",
+    guestName: "Sample Guest",
     adultCount: 2,
     childCount: null as never,
     reservationConfirmationUrl: "https://example.com/reservation",
@@ -210,6 +210,26 @@ describe("hotel reservation classification", () => {
     };
 
     expect(() => assertLooksLikeHotelReservation(email, buildMetadata())).not.toThrow();
+  });
+
+  it("keeps forwarded hotel confirmation emails whose subject includes airport in the hotel name", () => {
+    const email: SourceEmail = {
+      id: "hotel-forward-1",
+      from: "Sample Traveler <sender@example.com>",
+      subject: "Fwd: Holiday Inn Auckland Airport のご宿泊予約が確定しました。# 41700582 ： 9 Nov 2026",
+      receivedAt: "2026-08-10T05:37:08.000Z",
+      body: `
+        Forwarded message
+        Holiday Inn Auckland Airport
+        Reservation confirmed
+        Confirmation number: 41700582
+        Check-in: 2026-11-09
+        Check-out: 2026-11-10
+        Room: 1 Bedroom Suite
+      `
+    };
+
+    expect(() => assertSupportedHotelReservationCandidate(email)).not.toThrow();
   });
 
   it("rejects restaurant bookings even when a hotel name appears nearby", () => {

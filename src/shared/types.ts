@@ -104,6 +104,36 @@ export interface PendingForward {
   auditLog: AuditEvent[];
 }
 
+export interface SyncError {
+  gmailMessageId: string;
+  from: string;
+  receivedAt: string;
+  subject: string;
+  message: string;
+}
+
+export interface SyncReservationsResult {
+  items: PendingForward[];
+  errors: SyncError[];
+}
+
+export interface SyncProgress {
+  active: boolean;
+  stage: string;
+  currentStepLabel?: string;
+  currentStepIndex: number;
+  currentStepTotal: number;
+  totalCandidates: number;
+  completedCandidates: number;
+  failedCandidates: number;
+  currentIndex: number;
+  currentEmailId?: string;
+  currentEmailSubject?: string;
+  currentEmailFrom?: string;
+  startedAt?: string;
+  lastUpdatedAt: string;
+}
+
 export interface ForwardResult {
   item: PendingForward;
   tripItSentAt: string;

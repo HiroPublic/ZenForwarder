@@ -29,8 +29,9 @@ vi.mock("../services/gmail", () => ({
   fetchCandidateEmails: vi.fn(async () => emails),
   ensureSendAsAlias: vi.fn(),
   extractLowerRateButtonUrl: vi.fn((body: string) => body.match(/https?:\/\/[^\s"'<>]+/)?.[0] ?? "https://hotelslash.example/rates"),
-  isLowerRateEmail: vi.fn(() => lowerRate),
+  isLowerRateEmail: vi.fn((email: SourceEmail) => lowerRate || /Lower Rate Found on Your Trip/i.test(email.subject)),
   markProcessed: vi.fn(),
+  searchEmailsByReservationNumber: vi.fn(async () => emails),
   sendForward: vi.fn()
 }));
 
@@ -110,7 +111,8 @@ describe("workflow dismiss and reload", () => {
 
   it("excludes the dismissed Gmail message from the reloaded candidate list", async () => {
     const workflow = await import("../workflow");
-    const [item] = await workflow.syncReservations();
+    const { items } = await workflow.syncReservations();
+    const [item] = items;
 
     expect(item.gmailMessageId).toBe("sample-message-1");
 
@@ -122,12 +124,73 @@ describe("workflow dismiss and reload", () => {
 
   it("removes approved messages from the app queue and prevents them from reappearing on sync", async () => {
     const workflow = await import("../workflow");
-    const [item] = await workflow.syncReservations();
+    const { items } = await workflow.syncReservations();
+    const [item] = items;
 
     await workflow.approveForward(item.id, item.generatedBody);
 
     expect(workflow.listPending()).toEqual([]);
-    expect(await workflow.syncReservations()).toEqual([]);
+    expect((await workflow.syncReservations()).items).toEqual([]);
+  });
+
+  it("marks all inbox emails for the same reservation as processed after approval", async () => {
+    emails = [
+      { ...emails[0], id: "sample-message-1", subject: "Fwd: ホテル予約確認" },
+      { ...emails[0], id: "sample-message-2", subject: "ホテル予約確認" }
+    ];
+    const gmail = await import("../services/gmail");
+    const workflow = await import("../workflow");
+    const { items } = await workflow.syncReservations();
+    const [item] = items;
+
+    await workflow.approveForward(item.id, item.generatedBody);
+
+    expect(gmail.markProcessed).toHaveBeenCalledWith(undefined, "sample-message-1");
+    expect(gmail.markProcessed).toHaveBeenCalledWith(undefined, "sample-message-2");
+  });
+
+  it("can re-import an already processed reservation in force reload mode for verification", async () => {
+    const workflow = await import("../workflow");
+    const { items } = await workflow.syncReservations();
+    const [item] = items;
+
+    await workflow.approveForward(item.id, item.generatedBody);
+
+    const reloaded = await workflow.syncReservations(undefined, { forceReload: true });
+
+    expect(reloaded.items).toHaveLength(1);
+    expect(reloaded.items[0]?.gmailMessageId).toBe("sample-message-1");
+  });
+
+  it("can re-import an already processed reservation by specifying its reservation number", async () => {
+    emails = [
+      {
+        id: "generated-message-1",
+        from: "Sample Traveler <sender@example.com>",
+        subject: "Hotel reservation confirmation: Sample Hotel, check in Monday, June 1, 2026, check out Wednesday, June 3, 2026",
+        receivedAt: "2026-08-10T06:00:00.000Z",
+        body: "Forwarding reference:\nBooking Site / Reservation Number: Expedia / SAMPLE-RESERVATION-1"
+      },
+      {
+        id: "original-message-1",
+        from: "booking@example.jp",
+        subject: "ホテル予約確認",
+        receivedAt: "2026-04-30T00:00:00.000Z",
+        body: "ホテル: Sample Hotel"
+      }
+    ];
+    const gmail = await import("../services/gmail");
+    vi.mocked(gmail.searchEmailsByReservationNumber).mockResolvedValueOnce([emails[1]!]);
+    const workflow = await import("../workflow");
+    const { items } = await workflow.syncReservations();
+    const [item] = items;
+
+    await workflow.approveForward(item.id, item.generatedBody);
+
+    const reloaded = await workflow.syncReservations(undefined, { reservationNumber: "SAMPLE-RESERVATION-1" });
+
+    expect(reloaded.items).toHaveLength(1);
+    expect(reloaded.items[0]?.metadata.reservationNumber).toBe("SAMPLE-RESERVATION-1");
   });
 
   it("inherits checked Hotel Arrangement when an approved forward creates a Notion entry", async () => {
@@ -135,7 +198,8 @@ describe("workflow dismiss and reload", () => {
     const notion = await import("../services/notion");
     vi.mocked(notion.hasCheckedHotelArrangementForCheckIn).mockResolvedValueOnce(true);
     const workflow = await import("../workflow");
-    const [item] = await workflow.syncReservations();
+    const { items } = await workflow.syncReservations();
+    const [item] = items;
 
     await workflow.approveForward(item.id, item.generatedBody);
 
@@ -151,7 +215,8 @@ describe("workflow dismiss and reload", () => {
     const notion = await import("../services/notion");
     vi.mocked(notion.hasCheckedHotelArrangementForCheckIn).mockResolvedValueOnce(true);
     const workflow = await import("../workflow");
-    const [item] = await workflow.syncReservations();
+    const { items } = await workflow.syncReservations();
+    const [item] = items;
 
     const result = await workflow.registerForwardInNotionOnly(item.id);
 
@@ -168,7 +233,8 @@ describe("workflow dismiss and reload", () => {
     const notion = await import("../services/notion");
     vi.mocked(notion.hasCheckedHotelArrangementForCheckIn).mockResolvedValue(true);
     const workflow = await import("../workflow");
-    const [item] = await workflow.syncReservations();
+    const { items } = await workflow.syncReservations();
+    const [item] = items;
 
     await workflow.decideLowPriceProposal(item.id, "accepted");
 
@@ -183,7 +249,8 @@ describe("workflow dismiss and reload", () => {
     vi.mocked(notion.findNonHotelSlashBookingSiteForCheckIn).mockResolvedValueOnce("Expedia.com");
     const workflow = await import("../workflow");
 
-    const [item] = await workflow.syncReservations();
+    const { items } = await workflow.syncReservations();
+    const [item] = items;
 
     expect(item.proposal?.bookingSite).toBe("Expedia.com");
   });
@@ -209,7 +276,7 @@ describe("workflow dismiss and reload", () => {
     unavailableRateUrls = new Set(["https://hotelslash.example/unavailable"]);
     const workflow = await import("../workflow");
 
-    const firstPass = await workflow.syncReservations();
+    const { items: firstPass } = await workflow.syncReservations();
 
     expect(firstPass).toHaveLength(2);
     expect(firstPass.some((item) => item.kind === "unavailableLowPriceProposal")).toBe(true);
@@ -232,7 +299,8 @@ describe("workflow dismiss and reload", () => {
     const notion = await import("../services/notion");
     const workflow = await import("../workflow");
 
-    const [item] = await workflow.syncReservations();
+    const { items } = await workflow.syncReservations();
+    const [item] = items;
     const result = await workflow.acknowledgeUnavailableLowPriceProposal(item.id);
 
     expect(result.item.kind).toBe("unavailableLowPriceProposal");
@@ -249,9 +317,21 @@ describe("workflow dismiss and reload", () => {
     ];
     const workflow = await import("../workflow");
 
-    const pending = await workflow.syncReservations();
+    const { items: pending } = await workflow.syncReservations();
 
     expect(pending).toHaveLength(1);
+  });
+
+  it("still collapses duplicate reservation emails within the same force reload run", async () => {
+    emails = [
+      { ...emails[0], id: "sample-message-1" },
+      { ...emails[0], id: "sample-message-2" }
+    ];
+    const workflow = await import("../workflow");
+
+    const { items } = await workflow.syncReservations(undefined, { forceReload: true });
+
+    expect(items).toHaveLength(1);
   });
 
   it("skips transport bookings that are not hotel reservations", async () => {
@@ -268,7 +348,7 @@ describe("workflow dismiss and reload", () => {
     vi.mocked(ai.extractReservationJson).mockRejectedValueOnce(new ai.NonHotelReservationEmailError());
     const workflow = await import("../workflow");
 
-    expect(await workflow.syncReservations()).toEqual([]);
+    expect((await workflow.syncReservations()).items).toEqual([]);
   });
 
   it("skips restaurant, church, and museum bookings that are not hotel reservations", async () => {
@@ -302,7 +382,7 @@ describe("workflow dismiss and reload", () => {
       .mockRejectedValueOnce(new ai.NonHotelReservationEmailError("museum"));
     const workflow = await import("../workflow");
 
-    expect(await workflow.syncReservations()).toEqual([]);
+    expect((await workflow.syncReservations()).items).toEqual([]);
   });
 
   it("rebuilds existing forward candidates on sync so newly excluded emails disappear", async () => {
@@ -324,7 +404,7 @@ describe("workflow dismiss and reload", () => {
       hotelPhone: undefined,
       bookingSite: "taxidatum.com",
       reservationNumber: "TD265565",
-      guestName: "Mr. Hiro Kishimoto",
+      guestName: "Mr. Sample Guest",
       adultCount: 2,
       childCount: undefined,
       reservationConfirmationUrl: "https://taxidatum.com",
@@ -340,10 +420,50 @@ describe("workflow dismiss and reload", () => {
       cancellationPolicy: undefined,
       notes: undefined
     });
-    const [first] = await workflow.syncReservations();
+    const { items } = await workflow.syncReservations();
+    const [first] = items;
     expect(first).toBeDefined();
 
     vi.mocked(ai.extractReservationJson).mockRejectedValueOnce(new ai.NonHotelReservationEmailError("transport"));
-    expect(await workflow.syncReservations()).toEqual([]);
+    expect((await workflow.syncReservations()).items).toEqual([]);
+  });
+
+  it("collects a failed email with subject, receivedAt, and from, then continues to the next email", async () => {
+    emails = [
+      {
+        id: "broken-hotelslash",
+        from: "alerts@hotelslash.com",
+        subject: "Lower Rate Found on Your Trip",
+        receivedAt: "2026-08-10T01:00:00.000Z",
+        body: "CLICK HERE TO SEE YOUR RATES https://hotelslash.example/broken"
+      },
+      {
+        id: "sample-message-2",
+        from: "booking2@example.jp",
+        subject: "ホテル予約確認 その2",
+        receivedAt: "2026-08-10T02:00:00.000Z",
+        body: "ホテル: Sample Hotel 2"
+      }
+    ];
+    lowerRate = false;
+    const hotelslash = await import("../services/hotelslash");
+    vi.mocked(hotelslash.extractTopHotelSlashOffer).mockRejectedValueOnce(
+      new Error("HotelSlash rates page loaded, but the top offer could not be extracted.")
+    );
+    const workflow = await import("../workflow");
+
+    const result = await workflow.syncReservations();
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]?.gmailMessageId).toBe("sample-message-2");
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        gmailMessageId: "broken-hotelslash",
+        from: "alerts@hotelslash.com",
+        subject: "Lower Rate Found on Your Trip",
+        receivedAt: "2026-08-10T01:00:00.000Z",
+        message: "HotelSlash rates page loaded, but the top offer could not be extracted."
+      })
+    ]);
   });
 });

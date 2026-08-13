@@ -22,6 +22,7 @@ describe("resolveDevBrowserConfig", () => {
 
     expect(config.appUrl).toBe("http://localhost:4173");
     expect(config.healthcheckUrl).toBe("http://localhost:4173/ready");
+    expect(config.apiHealthcheckUrl).toBe("http://localhost:3000/api/health");
     expect(config.startupTimeoutMs).toBe(5000);
     expect(config.startupPollIntervalMs).toBe(100);
     expect(config.autoOpenBrowserDelayMs).toBe(50);
@@ -33,6 +34,7 @@ describe("resolveDevBrowserConfig", () => {
 
     expect(config.appUrl).toBe(DEFAULT_DEV_APP_URL);
     expect(config.healthcheckUrl).toBe(DEFAULT_DEV_APP_URL);
+    expect(config.apiHealthcheckUrl).toBe("http://localhost:3000/api/health");
     expect(config.startupTimeoutMs).toBe(DEFAULT_STARTUP_TIMEOUT_MS);
     expect(config.startupPollIntervalMs).toBe(DEFAULT_STARTUP_POLL_INTERVAL_MS);
     expect(config.autoOpenBrowserDelayMs).toBe(DEFAULT_AUTO_OPEN_BROWSER_DELAY_MS);
@@ -48,6 +50,18 @@ describe("resolveDevBrowserConfig", () => {
 
     expect(config.appUrl).toBeNull();
     expect(config.skipReason).toBe("APP_URL is invalid");
+  });
+
+  it("marks invalid API healthcheck URLs as a skip reason", () => {
+    const config = resolveDevBrowserConfig(
+      {
+        API_HEALTHCHECK_URL: "not a url"
+      },
+      { platform: "darwin", isTTY: true }
+    );
+
+    expect(config.apiHealthcheckUrl).toBeNull();
+    expect(config.skipReason).toBe("API_HEALTHCHECK_URL is invalid");
   });
 
   it("skips auto open when disabled or on CI", () => {

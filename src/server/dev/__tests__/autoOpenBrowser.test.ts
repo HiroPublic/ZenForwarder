@@ -41,7 +41,7 @@ describe("createAutoOpenBrowserRunner", () => {
 
     expect(first).toEqual({ opened: true, reason: null });
     expect(second).toEqual({ opened: false, reason: "already-opened" });
-    expect(waitForUrlFn).toHaveBeenCalledTimes(1);
+    expect(waitForUrlFn).toHaveBeenCalledTimes(2);
     expect(openBrowserFn).toHaveBeenCalledTimes(1);
   });
 });

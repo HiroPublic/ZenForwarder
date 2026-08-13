@@ -12,6 +12,7 @@ import {
   approveForward,
   decideLowPriceProposal,
   dismissForwardAndReload,
+  getSyncProgress,
   listPending,
   registerForwardInNotionOnly,
   syncReservations
@@ -21,6 +22,7 @@ import { archiveRecordedReservationEmails } from "./services/archive";
 
 const app = express();
 const clientDist = path.resolve(process.cwd(), "dist/client");
+const devClientRedirectUrl = resolveDevClientRedirectUrl();
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
@@ -98,11 +100,24 @@ app.get("/auth/google/callback", async (req, res, next) => {
 
 app.post("/api/sync", async (req, res, next) => {
   try {
-    const items = await syncReservations(req.session?.tokens);
-    res.json({ items });
+    const body = z
+      .object({
+        forceReload: z.boolean().optional(),
+        reservationNumber: z.string().trim().min(1).optional()
+      })
+      .parse(req.body ?? {});
+    const result = await syncReservations(req.session?.tokens, {
+      forceReload: body.forceReload,
+      reservationNumber: body.reservationNumber
+    });
+    res.json(result);
   } catch (error) {
     next(error);
   }
+});
+
+app.get("/api/sync/progress", (_req, res) => {
+  res.json(getSyncProgress());
 });
 
 app.get("/api/pending", (_req, res) => {
@@ -231,11 +246,25 @@ app.get("/api/gmail/archive-recorded-reservations", (_req, res) => {
     </html>`);
 });
 
+if (devClientRedirectUrl) {
+  app.get("/", (req, res, next) => {
+    if (!acceptsHtml(req)) {
+      next();
+      return;
+    }
+    res.redirect(devClientRedirectUrl);
+  });
+}
+
 if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));
 }
 
-app.use((_req, res) => {
+app.use((req, res) => {
+  if (devClientRedirectUrl && acceptsHtml(req)) {
+    res.redirect(devClientRedirectUrl);
+    return;
+  }
   const indexPath = path.resolve(clientDist, "index.html");
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
@@ -343,6 +372,24 @@ function escapeHtml(value: string) {
 
 function escapeAttribute(value: string) {
   return escapeHtml(value);
+}
+
+function resolveDevClientRedirectUrl() {
+  const isDevServer = process.env.NODE_ENV !== "production";
+  if (!isDevServer) return null;
+  try {
+    const appUrl = new URL(config.APP_URL);
+    if (appUrl.origin === "http://localhost:5173") {
+      return config.APP_URL;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function acceptsHtml(req: express.Request) {
+  return req.method === "GET" && Boolean(req.accepts("html"));
 }
 
 app.listen(3000, () => {
